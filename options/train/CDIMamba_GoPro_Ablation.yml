@@ -1,0 +1,117 @@
+# CDIMamba -- ablation ladder of Table 2 on GoPro.
+# Run all four cells to reproduce the component contribution:
+#
+#   (a) Restormer backbone only     1.64 M  33.62 / 0.9651
+#   (b) +CDIMM                      2.46 M  34.37 / 0.9718
+#   (c) +CDIMM +CDCEM               4.41 M  34.61 / 0.9739
+#   (d) +CDIMM +CDCEM +L_DLB (Full) 4.41 M  34.89 / 0.9760
+#
+# Switch the cell with the --force_yml overrides shown per block below.
+
+name: CDIMamba_GoPro_Ablation
+model_type: CDIMambaModel
+scale: 1
+num_gpu: 1
+manual_seed: 10
+
+datasets:
+  train:
+    name: GoPro_Train
+    type: PairedDeblurDataset
+    io_backend:
+      type: disk
+    dataroot_gt: datasets/GoPro/train/sharp
+    dataroot_lq: datasets/GoPro/train/blur
+    gt_size: 256
+    use_flip: true
+    use_rot: true
+    phase: train
+    num_worker_per_gpu: 8
+    batch_size_per_gpu: 8
+  val:
+    name: GoPro_Val
+    type: PairedDeblurDataset
+    io_backend:
+      type: disk
+    dataroot_gt: datasets/GoPro/test/sharp
+    dataroot_lq: datasets/GoPro/test/blur
+    gt_size: ~
+    phase: val
+
+# ---- cell (d): Full model ---------------------------------------------------
+network_g:
+  type: CDIMamba
+  dim: 48
+  num_blocks: [4, 6, 6]
+  num_heads: [1, 2, 4]
+  num_directions: 4
+  num_experts: 4
+  topk: 2
+  use_cdimm: true
+  use_cdcem: true
+  weight_sharing: true
+  with_dlb: true
+
+# Cell (a) Restormer backbone only:
+#   --force_yml network_g.use_cdimm=false network_g.use_cdcem=false \
+#               train.dlb_opt.loss_weight=0.0
+# Cell (b) +CDIMM:
+#   --force_yml network_g.use_cdimm=true network_g.use_cdcem=false \
+#               train.dlb_opt.loss_weight=0.0
+# Cell (c) +CDIMM +CDCEM (no DLB):
+#   --force_yml network_g.use_cdimm=true network_g.use_cdcem=true \
+#               train.dlb_opt.loss_weight=0.0
+# Cell (d) Full:
+#   --force_yml network_g.use_cdimm=true network_g.use_cdcem=true \
+#               train.dlb_opt.loss_weight=0.01
+#
+# Additional ablations worth reporting:
+#   --force_yml network_g.weight_sharing=false        # no cross-scale sharing
+#   --force_yml network_g.num_directions=2            # m=2 directional scans
+
+path:
+  pretrain_network_g: ~
+
+train:
+  ema_decay: 0.999
+  optim_g:
+    type: AdamW
+    lr: !!float 2e-4
+    weight_decay: !!float 1e-4
+    betas: [0.9, 0.99]
+  scheduler:
+    type: MultiStepLR
+    milestones: [150000, 250000, 320000, 360000]
+    gamma: 0.5
+  total_iter: 400000
+  warmup_iter: 3000
+  pixel_opt:
+    type: L1Loss
+    loss_weight: 1.0
+    reduction: mean
+  dlb_opt:
+    loss_weight: 0.01
+    reduction: mean
+  val_freq: !!float 5e3
+  save_checkpoint_freq: !!float 5e3
+
+val:
+  save_img: true
+  metrics:
+    psnr:
+      type: calculate_psnr
+      crop_border: 0
+      test_y_channel: false
+    ssim:
+      type: calculate_ssim
+      crop_border: 0
+      test_y_channel: false
+
+logger:
+  print_freq: 100
+  save_checkpoint_freq: !!float 5e3
+  use_tb_logger: true
+
+dist_params:
+  backend: nccl
+  port: 29500

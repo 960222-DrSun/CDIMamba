@@ -1,0 +1,113 @@
+# CDIMamba -- training on GoPro (synthetic motion blur)
+# Paper: Table 1 / Table 2, 4.41 M parameters, target 34.89 dB PSNR / 0.9760 SSIM.
+#
+# Usage:
+#   python train.py -opt options/train/CDIMamba_GoPro.yml
+# Override the data paths on the command line:
+#   python train.py -opt options/train/CDIMamba_GoPro.yml \
+#       --force_yml dataroot_gt=/data/GoPro/train/sharp dataroot_lq=/data/GoPro/train/blur
+
+name: CDIMamba_GoPro
+model_type: CDIMambaModel
+scale: 1
+num_gpu: 1
+manual_seed: 10
+
+datasets:
+  train:
+    name: GoPro_Train
+    type: PairedDeblurDataset
+    io_backend:
+      type: disk
+    dataroot_gt: datasets/GoPro/train/sharp
+    dataroot_lq: datasets/GoPro/train/blur
+    gt_size: 256
+    use_flip: true
+    use_rot: true
+    phase: train
+    num_worker_per_gpu: 8
+    batch_size_per_gpu: 8
+    dataset_enlarge_ratio: 1
+    prefetch_mode: ~
+
+  val:
+    name: GoPro_Val
+    type: PairedDeblurDataset
+    io_backend:
+      type: disk
+    dataroot_gt: datasets/GoPro/test/sharp
+    dataroot_lq: datasets/GoPro/test/blur
+    gt_size: ~          # full-resolution evaluation
+    phase: val
+
+network_g:
+  type: CDIMamba
+  in_channels: 3
+  dim: 48
+  num_blocks: [4, 6, 6]
+  num_heads: [1, 2, 4]
+  num_directions: 4      # m: L->R, R->L, T->B, B->T
+  num_experts: 4         # n
+  topk: 2                # k
+  d_state: 16
+  use_cdimm: true        # ablation switch (Table 2)
+  use_cdcem: true        # ablation switch (Table 2)
+  weight_sharing: true   # share the directional expert bank across scales
+  with_dlb: true         # enables the DLB term
+
+path:
+  pretrain_network_g: ~
+  strict_load_g: true
+  resume_state: ~
+  param_key_g: params
+
+train:
+  ema_decay: 0.999
+  optim_g:
+    type: AdamW
+    lr: !!float 2e-4
+    weight_decay: !!float 1e-4
+    betas: [0.9, 0.99]
+  scheduler:
+    type: MultiStepLR
+    milestones: [150000, 250000, 320000, 360000]
+    gamma: 0.5
+  total_iter: 400000
+  warmup_iter: 3000
+  # ---- losses ------------------------------------------------------------
+  pixel_opt:
+    type: L1Loss
+    loss_weight: 1.0
+    reduction: mean
+  dlb_opt:
+    loss_weight: 0.01      # lambda in L_total = L_rec + lambda * L_DLB
+    reduction: mean
+  # ---- validation --------------------------------------------------------
+  manual_seed: 10
+  val_freq: !!float 5e3
+  save_checkpoint_freq: !!float 5e3
+
+val:
+  val_freq: !!float 5e3
+  save_img: true
+  metrics:
+    psnr:
+      type: calculate_psnr
+      crop_border: 0
+      test_y_channel: false
+    ssim:
+      type: calculate_ssim
+      crop_border: 0
+      test_y_channel: false
+
+logger:
+  print_freq: 100
+  save_checkpoint_freq: !!float 5e3
+  use_tb_logger: true
+  wandb:
+    project: ~
+    resume_id: ~
+
+dist_params:
+  backend: nccl
+  port: 29500
